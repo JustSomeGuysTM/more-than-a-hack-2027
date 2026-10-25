@@ -62,3 +62,9 @@ __pycache__/
 venv/
 env/
 .DS_Store
+
+# derived data -- never in the public repo
+data_raw/
+eda/out/
+eda/audio/
+eda/*.npz
