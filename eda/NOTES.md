@@ -71,6 +71,15 @@ Times are broadcast seconds; mapping to tactical frames needs the broadcast->tac
 Only Polyglot's mlx-whisper + Demucs path is allowed; its Gemini-audio and Claude backends upload
 the audio and are off limits for this data.
 
+**Done (2026-10-25):** `~/Polyglot/.venv/bin/python eda/commentary.py --source broadcast` ran on
+the full match in ~40 min (Demucs ~30 min, Whisper ~8 min). English commentary, 5,020 segments /
+18,010 words with word timestamps -> `eda/audio/commentary_broadcast.jsonl`; stems in
+`eda/audio/stems/htdemucs/broadcast/{vocals,no_vocals}.wav` (1.2 GB each, gitignored; `no_vocals`
+is the crowd + whistle track for a whistle detector). Mostly colour commentary: play-by-play words
+are sparse (corner 21, offside 13, foul 19, goal 88, throw 4, free kick 1 mentions) so it will be a
+restart/stoppage cue, not a frame-level possession signal. Timestamps map to tactical frames with
+`eda.align.b2t` (see alignment section).
+
 ## databallpy
 `eda/dbp.py` builds a real databallpy `Game` from the numpy cache (its own loaders reject this
 export). Everything on https://databallpy.readthedocs.io/en/latest/getting_started/visualizations_page.html
@@ -90,7 +99,10 @@ save_tracking_video(g, 11185, 11685, "eda/out", title="clip", add_velocities=Tru
 ## Videos
 `data/tactical/BAR-ATH_tactical.mp4` (5.2 GB, from the team bucket `s3://more-than-a-hack-2027`,
 profile `mtah`). 199,319 frames at 25 fps, **has a stereo AAC audio track** -> whistle / crowd
-detection on the submission timeline with no alignment problem. Broadcast mp4 not uploaded yet.
+detection on the submission timeline with no alignment problem. **Checked: the track is near-silent**
+(mean -58 dB, peak -44 dB; whisper hallucinates "Thank you" on it) -> no commentary, probably no
+usable whistle either. Commentary comes from `data/broadcast/BAR-ATH_broadcast.mp4` (13 GB, same
+bucket, `broadcast/` prefix).
 
 ## Running things
 ```
@@ -106,3 +118,37 @@ detection on the submission timeline with no alignment problem. Broadcast mp4 no
 .venv/bin/python starter/baseline.py        # regenerate the 4 baselines
 .venv/bin/python evaluation/run_evaluation.py   # score everything in evaluation/results/
 ```
+
+## External data (allowed: RULES.md "External data about other games", FAQ "must be about other games")
+Hard line: **nothing human-made about BAR-ATH itself** — so ESPN/FotMob/Opta play-by-play *of this
+match* is out. Anything from other matches is fine as long as it is public and documented in the
+tech doc (source, who labelled, how much). Candidates, best first:
+
+| source | what | why we care |
+|---|---|---|
+| DFL / IDSSE open dataset (CC-BY 4.0, 7 Bundesliga matches 2022/23, 25 Hz, ~2.4 GB) | tracking **+ per-frame `possession` (team) and `ballstatus` (alive/dead) codes** + events; `pip install floodlight`, `IDSSEDataset().get(match_id)` | exactly our label space on real tracking -> train/validate the tracking->H/A/D model |
+| Metrica sample-data (3 games, tracking+events synced, 105x68, same provider as ours) | events incl. passes/recoveries/ball lost per team | derive team possession per frame; same coordinate convention as our ATD |
+| PFF FC 2022 World Cup (64 matches, broadcast tracking + events, free with signup) | possession events + broadcast-derived tracking | closest analogue to our *broadcast* ATD |
+| SkillCorner open data (10 A-League matches, broadcast tracking, "Dynamic Events", phases of play) | no video, no events | broadcast-tracking gap behaviour |
+| SoccerNet-Echoes (github SoccerNet/sn-echoes) | Whisper ASR transcripts of broadcast commentary per game, JSON {start,end,text}; SoccerNet video/labels need the SoccerNet NDA | commentary -> event/possession language model; SoccerNet Ball Action Spotting (12 classes incl. pass/drive/throw-in/out/free kick) gives event timestamps to align text to |
+| GOAL (arXiv 2211.04534) | ~20 games, audio + human transcripts of live commentary | small, human-quality commentary |
+
+Note: the tactical ATD smart-tagging + our own algorithmic pseudo-labels on BAR-ATH are also fine
+(no human decided them).
+
+## Broadcast -> tactical alignment (done, `eda/align.py`)
+The LaLiga scoreboard clock is OCR'd (tesseract, 1 crop / 2 s, 80% of samples carry a clock;
+the rest are replays/cutaways/pre-match). Clock runs in real time, so each half is one offset:
+
+| half | clock = broadcast_sec + | tactical frame = | broadcast range with clock |
+|---|---|---|---|
+| 1 | -286.5 s | 11185 + 25·clock | 308–2978 s |
+| 2 | -773.5 s | 113742 + 25·(clock-2700) | 3492–6544 s |
+
+91–94% of reads agree with the offset to within 1 s; the rest are OCR misreads. Validated
+independently: broadcast-ATD vs tactical-ATD player-centroid distance is minimised within ±1–2 s of
+the mapped frame. Uncertainty ≈ ±0.5 s (12 frames) from clock granularity. The clock display changes
+format in stoppage time (reads stop at 44:50 / ~96:00) but the offset still applies there.
+Use: `from eda.align import b2t; b2t(broadcast_seconds) -> tactical frame or None`. Constants in
+`eda/align.json`; reads in `eda/out/ocr/clock_ocr.csv`. Tactical kickoffs confirmed from the ball
+leaving the centre spot at frames 11185 and 113742.
